@@ -1,0 +1,493 @@
+---
+title: "PhOxi_Seq_PCA_DESeq2"
+author: "Han Zhang"
+date: '2024-01-02'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+
+```{r libraries, message=FALSE}
+library(ggpubr)
+library("DESeq2")
+library(org.Hs.eg.db)
+library(EnhancedVolcano)
+library("ggplot2")
+library(clusterProfiler)
+library("AnnotationDbi")
+library(enrichplot)
+library(annotate)
+library(forcats)
+library(ggstance)
+library(ggupset)
+library("vsn")
+library("pheatmap")
+library("RColorBrewer")
+library(pathview)
+```
+
+## Load the PhOxi-seq data and modify the dataframe
+
+```{r load, message=FALSE}
+# load sample table
+sampletable <- read.delim("Sample_information.txt", header=T, sep="")
+rownames(sampletable) <- sampletable$SampleName
+sampletable$Condition <- factor(sampletable$Condition)
+sampletable$Type <- factor(sampletable$Type)
+
+# load the raw PhOxi-seq data
+# PhOxi_seq_data <- read.csv("merged_df.csv")
+PhOxi_seq_data <- read.csv("merged_df_2024_03_18.csv")
+
+# check the distribution of VAF data
+# test <- lapply(PhOxi_seq_data['vaf_THUMPD3_kd_treated_R3'], as.numeric)
+# hist(test$vaf_THUMPD3_kd_treated_R3, xlim = c(0, 1))
+
+# change the row index to genomic coordinate
+PhOxi_seq_data$row_index <- paste(PhOxi_seq_data$chrom, PhOxi_seq_data$position, sep = "_")
+rownames(PhOxi_seq_data) <- PhOxi_seq_data$row_index
+PhOxi_seq_data$row_index <- NULL
+```
+
+```{r subset, message=FALSE}
+
+# subset data
+
+# 1. VAF
+PhOxi_seq_data_VAF <- subset(PhOxi_seq_data, select = c("vaf_Control_untreated_R1", "vaf_Control_untreated_R2", "vaf_Control_untreated_R3", "vaf_Control_treated_R1", "vaf_Control_treated_R2", "vaf_Control_treated_R3", "vaf_THUMPD3_kd_untreated_R1", "vaf_THUMPD3_kd_untreated_R2", "vaf_THUMPD3_kd_untreated_R3", "vaf_THUMPD3_kd_treated_R1", "vaf_THUMPD3_kd_treated_R2", "vaf_THUMPD3_kd_treated_R3"))
+
+names(PhOxi_seq_data_VAF) <- gsub("vaf_", "", names(PhOxi_seq_data_VAF))
+
+# 2. depth
+PhOxi_seq_data_depth <- subset(PhOxi_seq_data, select = c("depth_Control_untreated_R1", "depth_Control_untreated_R2", "depth_Control_untreated_R3", "depth_Control_treated_R1", "depth_Control_treated_R2", "depth_Control_treated_R3", "depth_THUMPD3_kd_untreated_R1", "depth_THUMPD3_kd_untreated_R2", "depth_THUMPD3_kd_untreated_R3", "depth_THUMPD3_kd_treated_R1", "depth_THUMPD3_kd_treated_R2", "depth_THUMPD3_kd_treated_R3"))
+
+names(PhOxi_seq_data_depth) <- gsub("depth_", "", names(PhOxi_seq_data_depth))
+```
+
+## Data exploration
+
+1. Plot density plot of distribution of VAF data from different samples
+
+```{r VAF_density_plot, message=FALSE}
+# Basic density
+png("Control_untreated_R1_VAF_distribution.png", width = 200, height = 150, units='mm', res = 300)
+ggplot(PhOxi_seq_data_VAF, aes(x=Control_untreated_R1)) + 
+  geom_density() +
+  xlim(0, 1) +
+  ylim(0, 6) + ggtitle("Control_untreated_R1") +
+  xlab("variant allele frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+png("Control_treated_R1_VAF_distribution.png", width = 200, height = 150, units='mm', res = 300)
+ggplot(PhOxi_seq_data_VAF, aes(x=Control_treated_R1)) + 
+  geom_density() +
+  xlim(0, 1) +
+  ylim(0, 6) + ggtitle("Control_treated_R1") +
+  xlab("variant allele frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+png("THUMPD3_kd_untreated_R1_VAF_distribution.png", width = 200, height = 150, units='mm', res = 300)
+ggplot(PhOxi_seq_data_VAF, aes(x=THUMPD3_kd_untreated_R1)) + 
+  geom_density() +
+  xlim(0, 1) +
+  ylim(0, 6) + ggtitle("THUMPD3_kd_untreated_R1") +
+  xlab("variant allele frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+png("THUMPD3_kd_treated_R1_VAF_distribution.png", width = 200, height = 150, units='mm', res = 300)
+ggplot(PhOxi_seq_data_VAF, aes(x=THUMPD3_kd_treated_R1)) + 
+  geom_density() +
+  xlim(0, 1) +
+  ylim(0, 6) + ggtitle("THUMPD3_kd_treated_R1") +
+  xlab("variant allele frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+dev.off()
+
+# png("Control_untreated_R1_VAF_2024_03_18.png", width = 200, height = 150, units='mm', res = 300)
+# Add mean line
+# p+ geom_vline(aes(xintercept=median(Control_untreated_R1)),
+#             color="blue", linetype="dashed", size=1)
+# dev.off()
+
+# plot multiple columns at the same time
+
+# reshape data frame
+df_PhOxi_seq_data_VAF_reshaped <- data.frame(y = c(PhOxi_seq_data_VAF$Control_untreated_R1,PhOxi_seq_data_VAF$Control_untreated_R2,PhOxi_seq_data_VAF$Control_untreated_R3,
+                                                   PhOxi_seq_data_VAF$Control_treated_R1, PhOxi_seq_data_VAF$Control_treated_R2, PhOxi_seq_data_VAF$Control_treated_R3,
+                                                   PhOxi_seq_data_VAF$THUMPD3_kd_untreated_R1, PhOxi_seq_data_VAF$THUMPD3_kd_untreated_R2, PhOxi_seq_data_VAF$THUMPD3_kd_untreated_R3,
+                                                   PhOxi_seq_data_VAF$THUMPD3_kd_treated_R1, PhOxi_seq_data_VAF$THUMPD3_kd_treated_R2, PhOxi_seq_data_VAF$THUMPD3_kd_treated_R3),
+                                             group = c(rep("Control_untreated_R1", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("Control_untreated_R2", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("Control_untreated_R3", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("Control_treated_R1", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("Control_treated_R2", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("Control_treated_R3", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_untreated_R1", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_untreated_R2", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_untreated_R3", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_treated_R1", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_treated_R2", nrow(PhOxi_seq_data_VAF)),
+                                                       rep("THUMPD3_kd_treated_R3", nrow(PhOxi_seq_data_VAF))))
+
+# change the layout
+# png("Distribution_all_samples_VAF_2024_03_18.png", width = 250, height = 280, units='mm', res = 300)
+ggplot(df_PhOxi_seq_data_VAF_reshaped, aes(x=y)) +  geom_density() + xlim(0, 1) + facet_wrap(~group, nrow=4)
+# dev.off()
+```
+
+2. plot distribution of VAF data
+
+```{r variance_versus_depth_plot, message=FALSE}
+PhOxi_seq_data_VAF_Control_untreated <- subset(PhOxi_seq_data_VAF, select = c('Control_untreated_R1', 'Control_untreated_R2', 'Control_untreated_R3'))
+PhOxi_seq_data_depth_Control_untreated <- subset(PhOxi_seq_data_depth, select = c('Control_untreated_R1', 'Control_untreated_R2', 'Control_untreated_R3'))
+
+library(matrixStats)
+# Calculate row-wise mean
+row_means <- rowMeans(PhOxi_seq_data_depth_Control_untreated)
+# Calculate row-wise standard deviation
+row_sds <- apply(PhOxi_seq_data_VAF_Control_untreated,1, sd, na.rm = TRUE)
+
+# png("stdev_versus_log_depth_2024_03_18.png", width = 200, height = 150, units='mm', res = 300)
+plot(log(row_means),row_sds, main = "Variances in VAF data versus sequencing depth",
+     xlab = "log(depth)", ylab = "stdev(VAF)",
+     pch = 20, cex = 1, frame = FALSE)
+# dev.off()
+
+# png("stdev_versus_depth_2024_03_18.png", width = 200, height = 150, units='mm', res = 300)
+plot(row_means,row_sds, main = "Variances in VAF data versus sequencing depth",
+     xlab = "depth", ylab = "stdev(VAF)",
+     pch = 20, cex = 1, frame = FALSE)
+# dev.off()
+# lines(lowess(row_means,row_sds), col = "blue")
+
+```
+
+## Clustering
+
+1. heatmap based on euclidean distances between samples
+
+```{r heatmap_euclidean_distance, message=FALSE}
+sampleDists <- dist(t(PhOxi_seq_data_VAF))
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+```
+
+2. UMAP
+
+```{r UMAP, message=FALSE}
+set.seed = 10
+custom.config = umap.defaults # Set of configurations
+custom.config$n_neighbors = 4
+
+library(umap)
+PhOxi_seq_data_VAF.umap <- umap(t(PhOxi_seq_data_VAF), config=custom.config)
+PhOxi_seq_data_VAF.group <- c(rep('Control',6), rep('THUMPD3_kd',6))
+PhOxi_seq_data_VAF.condition <- c(rep('untreated',3),rep('treated',3),rep('untreated',3),rep('treated',3))
+
+
+df_PhOxi_seq_data_VAF <- data.frame(PhOxi_seq_data_VAF.umap$layout[,1], PhOxi_seq_data_VAF.umap$layout[,2], PhOxi_seq_data_VAF.group, PhOxi_seq_data_VAF.condition)
+colnames(df_PhOxi_seq_data_VAF) <- c("X","Y","group","condition")
+
+ggplot(df_PhOxi_seq_data_VAF, aes(x =X, y= Y, color= group, shape=condition))+ geom_point()
+
+
+```
+
+
+3. PCA plot
+
+```{r PCA}
+# Perform PCA
+pca_result <- prcomp(PhOxi_seq_data_VAF, scale. = TRUE)
+
+# Create a data frame from the PCA result for plotting
+pca_data <- data.frame(PC1 = pca_result$rotation[,1], PC2 = pca_result$rotation[,2])
+
+var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2) * 100
+
+pca_data$sample <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+pca_data$Condition <- c('untreated', "untreated", "untreated", "treated", "treated", "treated", 'untreated', "untreated", "untreated", "treated", "treated", "treated")
+pca_data$Type <- c("Control", "Control", "Control", "Control", "Control", "Control", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd")
+
+# Plotting the PCA
+# png("PCA_VAF_2024_03_18.png", width = 150, height = 100, units='mm', res = 300)
+ggplot(pca_data, aes(x = PC1, y = PC2, color=Condition, shape=Type)) +
+    geom_point() +
+    xlab(paste("Principal Component 1 - ", round(var_explained[1], 2), "% variance", sep="")) +
+    ylab(paste("Principal Component 2 - ", round(var_explained[2], 2), "% variance", sep="")) +
+    ggtitle("PCA Plot")
+# dev.off()
+
+```
+
+redo PCA plot with reduced list of targets: targets with sequencing depth >=10 in all samples and targets with sequencing depth >= 50.
+
+```{r PCA_2}
+depth_threshold = 50
+PhOxi_seq_data_depth_filtered <- PhOxi_seq_data_depth[rowSums(PhOxi_seq_data_depth >= depth_threshold) == ncol(PhOxi_seq_data_depth), ]
+PhOxi_seq_data_VAF_filtered <- PhOxi_seq_data_VAF[rownames(PhOxi_seq_data_depth_filtered), ]
+
+# Perform PCA
+pca_result <- prcomp(PhOxi_seq_data_VAF_filtered, scale. = TRUE)
+
+# Create a data frame from the PCA result for plotting
+pca_data <- data.frame(PC1 = pca_result$rotation[,1], PC2 = pca_result$rotation[,2])
+
+var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2) * 100
+
+pca_data$sample <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+pca_data$Condition <- c('untreated', "untreated", "untreated", "treated", "treated", "treated", 'untreated', "untreated", "untreated", "treated", "treated", "treated")
+pca_data$Type <- c("Control", "Control", "Control", "Control", "Control", "Control", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd")
+
+# Plotting the PCA
+# png("PCA_VAF_depth_50_2024_03_21.png", width = 150, height = 100, units='mm', res = 300)
+ggplot(pca_data, aes(x = PC1, y = PC2, color=Condition, shape=Type)) +
+    geom_point() +
+    xlab(paste("Principal Component 1 - ", round(var_explained[1], 2), "% variance", sep="")) +
+    ylab(paste("Principal Component 2 - ", round(var_explained[2], 2), "% variance", sep="")) +
+    ggtitle("PCA Plot")
+# dev.off()
+
+```
+
+##redo the clustering plots based on VAF data of top targets
+
+```{r PCA_top_targets}
+# load top targets
+PhOxi_seq_top_targets <- read.csv("/mnt/home3/kouzarides/hz395/PhOxi_Seq_THUMPD3/Further_Work/combined_all_vaf_new.csv")
+
+# Merge two column values with '_'
+merged_index <- paste(PhOxi_seq_top_targets$chrom, PhOxi_seq_top_targets$position, sep = "_")
+# Set merged_index as the row names of the dataframe
+rownames(PhOxi_seq_top_targets) <- merged_index
+
+PhOxi_seq_data_VAF_top_targets <- merge(PhOxi_seq_data_VAF, PhOxi_seq_top_targets, by = 0)
+rownames(PhOxi_seq_data_VAF_top_targets) <- PhOxi_seq_data_VAF_top_targets$Row.names
+PhOxi_seq_data_VAF_top_targets <- subset(PhOxi_seq_data_VAF_top_targets, select = -c(Row.names))
+PhOxi_seq_data_VAF_top_targets_G <- PhOxi_seq_data_VAF_top_targets %>% filter(grepl('G', ref_treated_control))
+
+PhOxi_seq_data_VAF_top_targets_data <- PhOxi_seq_data_VAF_top_targets[,1:12]
+PhOxi_seq_data_VAF_top_targets_G_data <- PhOxi_seq_data_VAF_top_targets_G[,1:12]
+
+```
+
+1. PCA
+
+```{r PCA_1}
+# Perform PCA
+pca_result <- prcomp(PhOxi_seq_data_VAF_top_targets_G_data, scale. = TRUE)
+
+# Create a data frame from the PCA result for plotting
+pca_data <- data.frame(PC1 = pca_result$rotation[,1], PC2 = pca_result$rotation[,2])
+
+var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2) * 100
+
+pca_data$sample <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+pca_data$Condition <- c('untreated', "untreated", "untreated", "treated", "treated", "treated", 'untreated', "untreated", "untreated", "treated", "treated", "treated")
+pca_data$Type <- c("Control", "Control", "Control", "Control", "Control", "Control", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd", "THUMPD3_kd")
+
+# Plotting the PCA
+# png("PCA_VAF_top_G_targets_1_2024_03_18.png", width = 150, height = 100, units='mm', res = 300)
+# ggplot(pca_data, aes(x = PC1, y = PC2, color=Condition, shape=Type)) +
+#     geom_point() +
+#     xlab(paste("Principal Component 1 - ", round(var_explained[1], 2), "% variance", sep="")) +
+#     ylab(paste("Principal Component 2 - ", round(var_explained[2], 2), "% variance", sep="")) +
+#     ggtitle("PCA Plot")
+# dev.off()
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color=sample)) +
+    geom_point() +
+    xlab(paste("Principal Component 1 - ", round(var_explained[1], 2), "% variance", sep="")) +
+    ylab(paste("Principal Component 2 - ", round(var_explained[2], 2), "% variance", sep="")) +
+    ggtitle("PCA Plot")
+
+```
+
+2. heatmap
+
+```{r heatmap_euclidean_distance_1, message=FALSE}
+sampleDists <- dist(t(PhOxi_seq_data_VAF_top_targets_G_data))
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+```
+
+3. UMAP
+
+```{r UMAP, message=FALSE}
+set.seed = 10
+custom.config = umap.defaults # Set of configurations
+custom.config$n_neighbors = 6
+
+library(umap)
+PhOxi_seq_data_VAF_top_targets_G_data.umap <- umap(t(PhOxi_seq_data_VAF_top_targets_G_data), config=custom.config)
+PhOxi_seq_data_VAF_top_targets_G_data.group <- c(rep('Control',6), rep('THUMPD3_kd',6))
+PhOxi_seq_data_VAF_top_targets_G_data.condition <- c(rep('untreated',3),rep('treated',3),rep('untreated',3),rep('treated',3))
+PhOxi_seq_data_VAF_top_targets_G_data.sample <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+
+df_PhOxi_seq_data_VAF_top_targets_G_data <- data.frame(PhOxi_seq_data_VAF_top_targets_G_data.umap$layout[,1], PhOxi_seq_data_VAF_top_targets_G_data.umap$layout[,2], PhOxi_seq_data_VAF_top_targets_G_data.group, PhOxi_seq_data_VAF_top_targets_G_data.condition, PhOxi_seq_data_VAF_top_targets_G_data.sample)
+colnames(df_PhOxi_seq_data_VAF_top_targets_G_data) <- c("X","Y","group","condition","sample")
+
+png("UMAP_VAF_top_G_targets_set_seed_2024_04_10.png", width = 150, height = 100, units='mm', res = 300)
+ggplot(df_PhOxi_seq_data_VAF_top_targets_G_data, aes(x =X, y= Y, color= condition, shape=group))+ geom_point()
+dev.off()
+
+# ggplot(df_PhOxi_seq_data_VAF_top_targets_G_data, aes(x =X, y= Y, color= sample))+ geom_point()
+
+```
+
+## correlations between samples
+
+1. Spearman correlation
+
+```{r spearman_correlation, message=FALSE}
+cormat <- round(cor(PhOxi_seq_data_VAF, method = 'spearman'),2)
+
+library(reshape2)
+melted_cormat <- melt(cormat)
+head(melted_cormat)
+
+ggheatmap <- ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() + scale_fill_gradient(
+    name = "Pearson Correlation", # changes legend title
+    low = "Gray",
+    high = "Blue",
+    limit = c(0.6, 1),
+    space = "Lab",
+    guide = "colourbar"
+  ) + theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(
+      angle = 45,
+      vjust = 1,
+      size = 8,
+      hjust = 1
+    ),
+    axis.text.y = element_text(
+      size = 8
+    )
+  )
+
+# png("Pearson_Correlation_VAF_2024_03_19_spearman.png", width = 200, height = 150, units='mm', res = 300)
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 2) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5)))
+# dev.off()
+```
+
+## calculate depth dependent correlation
+
+1. calculate mean depth between all samples
+2. rank all sites by average depth
+3. calculate average correlation coefficient between VAF values of each sample and all other samples for each depth window
+4, plot correlation versus log depth
+
+```{r depth_dependent_correlation, message=FALSE}
+PhOxi_seq_data_depth$RowMean <- rowMeans(PhOxi_seq_data_depth)
+PhOxi_seq_data_VAF$depthmean <- PhOxi_seq_data_depth$RowMean
+PhOxi_seq_data_VAF$logdepthmean <- log(PhOxi_seq_data_VAF$depthmean)
+
+PhOxi_seq_data_VAF$Rank <- rank(PhOxi_seq_data_VAF$logdepthmean)
+PhOxi_seq_data_VAF <- PhOxi_seq_data_VAF[order(PhOxi_seq_data_VAF$Rank), ]
+
+depth_window <- c(0,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,7,8,9,10,14)
+depth_point <- c(0.5, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75, 4.25, 4.75, 5.25, 5.75, 6.5, 7.5, 8.5, 9.5, 12)
+```
+
+```{r depth_dependent_correlation_1, message=FALSE}
+
+mean_cor <- c()
+sd_cor <- c()
+
+for (i in 1:(length(depth_window) - 1)) {
+  PhOxi_seq_data_VAF_temp <- PhOxi_seq_data_VAF[PhOxi_seq_data_VAF$logdepthmean >= depth_window[i] & PhOxi_seq_data_VAF$logdepthmean < depth_window[i+1],  ]
+  cor_values <- cor(PhOxi_seq_data_VAF_temp, method = 'spearman')
+  mean_temp_list <- c()
+  sd_temp_list <- c()
+  
+  for (j in 1:12) {
+    cor_temp <- cor_values[j,][1:12]
+    mean_temp_list <- c(mean_temp_list, mean(cor_temp[cor_temp != 1]))
+    sd_temp_list <- c(sd_temp_list, sd(cor_temp[cor_temp != 1]))
+  }
+  
+  mean_cor <- c(mean_cor,mean_temp_list)
+  sd_cor <- c(sd_cor,sd_temp_list)
+}
+
+```
+
+```{r depth_dependent_correlation_2, message=FALSE}
+df_mean_cor <- as.data.frame(t(matrix(mean_cor,nrow=12)))
+df_sd_cor <- as.data.frame(t(matrix(sd_cor,nrow=12)))
+colnames(df_mean_cor) <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+colnames(df_sd_cor) <- c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3")
+df_mean_cor$depth_point <- depth_point
+df_sd_cor$depth_point <- depth_point
+
+```
+
+```{r depth_dependent_correlation_plot, message=FALSE}
+# png("Pearson_Correlation_depth_dependent_VAF_2024_03_19_spearman.png", width = 200, height = 150, units='mm', res = 300)
+
+par(mar=c(5, 4, 4, 10), xpd=TRUE)
+
+# Create an empty plot
+plot(df_mean_cor$depth_point, df_mean_cor$Control_untreated_R1, type = "n", xlim = c(0, 13), ylim = c(0.4, 1), 
+     xlab = "log(depth)", ylab = "Spearman Correlation")
+
+lwd_value = 2
+# Plot each line one by one
+lines(df_mean_cor$depth_point, df_mean_cor$Control_untreated_R1, type = "l", col = "steelblue1", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$Control_untreated_R2, type = "l", col = "steelblue2", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$Control_untreated_R3, type = "l", col = "steelblue3", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$Control_treated_R1, type = "l", col = "rosybrown1", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$Control_treated_R2, type = "l", col = "rosybrown2", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$Control_treated_R3, type = "l", col = "rosybrown3", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_untreated_R1, type = "l", col = "skyblue1", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_untreated_R2, type = "l", col = "skyblue2", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_untreated_R3, type = "l", col = "skyblue3", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_treated_R1, type = "l", col = "thistle1", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_treated_R2, type = "l", col = "thistle2", lwd = lwd_value)
+lines(df_mean_cor$depth_point, df_mean_cor$THUMPD3_kd_treated_R3, type = "l", col = "thistle3", lwd = lwd_value)
+
+# Add a legend
+legend("topright", inset=c(-0.35, 0), legend = c('Control_untreated_R1', "Control_untreated_R2", "Control_untreated_R3", "Control_treated_R1", "Control_treated_R2", "Control_treated_R3", "THUMPD3_kd_untreated_R1", "THUMPD3_kd_untreated_R2", "THUMPD3_kd_untreated_R3", "THUMPD3_kd_treated_R1", "THUMPD3_kd_treated_R2", "THUMPD3_kd_treated_R3"), col = c("steelblue1", "steelblue2", "steelblue3", "rosybrown1", "rosybrown2", "rosybrown3", "skyblue1", "skyblue2", "skyblue3", "thistle1", "thistle2", "thistle3"), lty = 1, cex = 0.6)
+
+# dev.off()
+
+```
